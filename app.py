@@ -231,31 +231,79 @@ def health():
 def player():
     page = r"""<!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AI Cricket Commentary</title>
 <style>
-html,body{margin:0;width:100%;height:100%;background:transparent;overflow:hidden}
-#enable{display:none;position:fixed;left:12px;bottom:12px;border:0;border-radius:8px;padding:10px 14px;background:#101820;color:white;font:600 14px Arial}
+*{box-sizing:border-box}html,body{margin:0;min-height:100%;font-family:Arial,sans-serif;background:#0b1220;color:#f8fafc}
+body{padding:18px}.panel{max-width:620px;margin:0 auto;border:1px solid #293449;border-radius:16px;background:#111b2d;padding:20px;box-shadow:0 12px 36px #0004}
+h1{font-size:21px;margin:0 0 7px}.sub{color:#aab8ce;font-size:14px;line-height:1.5}
+.row{display:flex;gap:10px;margin:16px 0 10px}input{min-width:0;flex:1;background:#080f1c;color:#fff;border:1px solid #42516b;border-radius:9px;padding:12px;font-size:16px}
+button{border:0;border-radius:9px;padding:12px 15px;background:#22c55e;color:#07130b;font-size:15px;font-weight:700;cursor:pointer}
+#start{width:100%;margin:8px 0 12px}#status{padding:12px;border-radius:9px;background:#0a1322;color:#cbd5e1;font-size:14px;line-height:1.5}
+#score{font-size:15px;font-weight:700;margin-top:14px;line-height:1.6}.muted{font-size:12px;color:#93a4bc;margin-top:12px}
 </style></head><body>
-<button id="enable">Enable commentary audio</button><audio id="audio" preload="none"></audio>
+<main class="panel">
+<h1>🎙️ AI Cricket Commentary</h1>
+<div class="sub">Live score feed check and voice commentary. Choose the match ID, then tap Start Commentary so your phone/browser permits audio.</div>
+<div class="row"><input id="mid" inputmode="numeric" autocomplete="off" placeholder="Match ID (numbers only)"><button id="load">Load</button></div>
+<button id="start">▶ Start Commentary</button>
+<div id="status" role="status">Ready. Enter a match ID and tap Load.</div>
+<div id="score"></div>
+<div class="muted">This service only reads the existing score backend. It does not change your scorecard or match selector.</div>
+<audio id="audio" preload="none"></audio>
+</main>
 <script>
-const pollMs=__POLL_MS__, mid=new URLSearchParams(location.search).get("match_id")||"";
-const audio=document.getElementById("audio"), btn=document.getElementById("enable");
-let enabled=true,busy=false;
+const pollMs=__POLL_MS__, params=new URLSearchParams(location.search);
+const midInput=document.getElementById("mid"), statusEl=document.getElementById("status"), scoreEl=document.getElementById("score");
+const startBtn=document.getElementById("start"), loadBtn=document.getElementById("load"), audio=document.getElementById("audio");
+let mid=params.get("match_id")||"", running=false, busy=false, timer=null;
+midInput.value=mid;
+function say(s){statusEl.textContent=s}
+function selectedId(){return /^\d{3,12}$/.test(midInput.value.trim())?midInput.value.trim():""}
+async function loadStatus(){
+ if(!mid){say("Enter a numeric match ID, then tap Load.");return false}
+ try{
+  const r=await fetch("/status?match_id="+encodeURIComponent(mid)+"&_="+Date.now(),{cache:"no-store"});
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok){say("Status check failed (HTTP "+r.status+"): "+(data.error||"Open the service URL again, then retry."));scoreEl.textContent="";return false}
+  const s=data.snapshot||{};
+  scoreEl.textContent=(s.title?s.title+" — ":"")+
+   (s.team1||"Team 1")+" "+(s.team1_score||"")+
+   "  |  "+(s.team2||"Team 2")+" "+(s.team2_score||"")+
+   (s.status?"\n"+s.status:"");
+  say("Score backend connected. Match snapshot loaded.");
+  return true;
+ }catch(e){say("Could not reach the service. Refresh this page and try again.");return false}
+}
 async function poll(){
- if(!enabled||busy||!mid)return; busy=true;
+ if(!running||busy||!mid)return;
+ busy=true;
  try{
   const r=await fetch("/next.mp3?match_id="+encodeURIComponent(mid)+"&_="+Date.now(),{cache:"no-store"});
   if(r.status===200){
-   const url=URL.createObjectURL(await r.blob()); audio.src=url;
-   try{await audio.play();}catch(e){URL.revokeObjectURL(url);btn.style.display="block";enabled=false;busy=false;return;}
-   audio.onended=()=>{URL.revokeObjectURL(url);busy=false;setTimeout(poll,250);};
-   audio.onerror=()=>{URL.revokeObjectURL(url);busy=false;setTimeout(poll,pollMs);};
+   const blob=await r.blob(), url=URL.createObjectURL(blob);
+   audio.src=url;
+   try{await audio.play();say("🎙️ Playing AI commentary.");}
+   catch(e){URL.revokeObjectURL(url);say("Audio is blocked by the browser. Tap Start Commentary again.");running=false;startBtn.textContent="▶ Start Commentary";busy=false;return}
+   audio.onended=()=>{URL.revokeObjectURL(url);busy=false;setTimeout(poll,250)};
+   audio.onerror=()=>{URL.revokeObjectURL(url);busy=false;say("Audio playback failed. Tap Start Commentary to retry.");setTimeout(poll,pollMs)};
    return;
   }
- }catch(e){}
- busy=false;setTimeout(poll,pollMs);
+  if(r.status===401){say("Authentication is not set. Open the main service URL again; if this persists, check COMMENTARY_TOKEN in Render.");running=false}
+  else if(r.status===503){say("OpenAI API key is not configured. Check OPENAI_API_KEY in the commentary service's Render environment.");running=false}
+  else if(r.status!==204){say("Commentary request returned HTTP "+r.status+". Check the commentary service logs.");}
+  else {say("Connected — waiting for a new score or player update to commentate.");}
+ }catch(e){say("Connection hiccup. Retrying automatically…")}
+ busy=false;
+ if(running)setTimeout(poll,pollMs);
 }
-btn.onclick=()=>{enabled=true;btn.style.display="none";poll();};
-if(mid)poll();else{btn.textContent="Add match_id to commentary URL";btn.style.display="block";}
+loadBtn.onclick=async()=>{mid=selectedId();if(!mid){say("Please enter a numeric match ID.");return}history.replaceState(null,"","?match_id="+encodeURIComponent(mid));await loadStatus()};
+startBtn.onclick=async()=>{
+ if(!mid){mid=selectedId();if(!mid){say("Enter a numeric match ID first.");return}history.replaceState(null,"","?match_id="+encodeURIComponent(mid))}
+ const ok=await loadStatus();if(!ok)return;
+ running=true;startBtn.textContent="■ Stop Commentary";say("Starting voice commentary…");poll();
+ startBtn.onclick=()=>{running=false;startBtn.textContent="▶ Start Commentary";say("Commentary stopped. Tap Start Commentary to resume.")};
+};
+if(mid){loadStatus()}else{say("Enter a match ID above. The page now shows status instead of staying blank.")}
 </script></body></html>"""
     response = make_response(page.replace("__POLL_MS__", str(POLL_SECONDS * 1000)))
     # The player uses a same-origin HttpOnly cookie, so the token is not exposed in page JavaScript.
