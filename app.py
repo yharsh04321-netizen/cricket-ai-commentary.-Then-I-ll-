@@ -264,6 +264,7 @@ button{border:0;border-radius:9px;padding:12px 15px;background:#22c55e;color:#07
 <div class="sub">Live score feed check and voice commentary. Choose the match ID, then tap Start Commentary so your phone/browser permits audio.</div>
 <div class="row"><input id="mid" inputmode="numeric" autocomplete="off" placeholder="Match ID (numbers only)"><button id="load">Load</button></div>
 <button id="start">▶ Start Commentary</button>
+<button id="freeStart" style="width:100%;margin:0 0 12px;background:#60a5fa;color:#07111f">▶ Start Free Voice (no API)</button>
 <div id="status" role="status">Ready. Enter a match ID and tap Load.</div>
 <div id="score"></div>
 <div id="transcript" style="display:none;margin-top:14px;padding:13px;border-left:3px solid #22c55e;border-radius:6px;background:#0a1322;line-height:1.6;color:#f8fafc" aria-live="polite"></div>
@@ -273,8 +274,9 @@ button{border:0;border-radius:9px;padding:12px 15px;background:#22c55e;color:#07
 <script>
 const pollMs=__POLL_MS__, params=new URLSearchParams(location.search);
 const midInput=document.getElementById("mid"), statusEl=document.getElementById("status"), scoreEl=document.getElementById("score");
-const startBtn=document.getElementById("start"), loadBtn=document.getElementById("load"), audio=document.getElementById("audio"), transcriptEl=document.getElementById("transcript");
+const startBtn=document.getElementById("start"), freeStartBtn=document.getElementById("freeStart"), loadBtn=document.getElementById("load"), audio=document.getElementById("audio"), transcriptEl=document.getElementById("transcript");
 let mid=params.get("match_id")||"", running=false, busy=false, timer=null;
+let freeRunning=false, freeBusy=false, freeLastSnapshot=null, freeTimer=null;
 midInput.value=mid;
 function say(s){statusEl.textContent=s}
 function selectedId(){return /^\d{3,12}$/.test(midInput.value.trim())?midInput.value.trim():""}
@@ -328,6 +330,79 @@ async function poll(){
  busy=false;
  if(running)setTimeout(poll,pollMs);
 }
+function freeCommentary(s, previous){
+ const battingTeam=s.batting_team || (s.batting_index===0?s.team1:(s.batting_index===1?s.team2:""));
+ const score=(battingTeam===s.team2?s.team2_score:s.team1_score)||"";
+ const overs=(battingTeam===s.team2?s.team2_overs:s.team1_overs)||"";
+ const batter=(s.batsmen||[]).find(p=>p.striker)||((s.batsmen||[])[0]||null);
+ const bowler=s.bowler||null;
+ let line="";
+ if(!previous){
+  line="Live match update. "+(battingTeam?battingTeam+" are batting. ":"")+(score?"The score is "+score+(overs?" after "+overs+" overs. ":". "):"")+(batter?batter.name+" is on "+batter.runs+" runs from "+batter.balls+" balls. ":"")+(bowler?" "+bowler.name+" has bowled "+(bowler.overs||"")+" overs, conceding "+(bowler.runs||"")+" runs.":"");
+ }else{
+  const scoreChanged=s.team1_score!==previous.team1_score||s.team2_score!==previous.team2_score||s.team1_overs!==previous.team1_overs||s.team2_overs!==previous.team2_overs;
+  const playersChanged=JSON.stringify(s.batsmen)!==JSON.stringify(previous.batsmen)||JSON.stringify(s.bowler)!==JSON.stringify(previous.bowler);
+  const statusChanged=s.status!==previous.status;
+  if(scoreChanged){
+   line=(battingTeam?battingTeam+". ":"")+"Updated score "+(score||"")+(overs?" in "+overs+" overs. ":". ")+(batter?batter.name+" has "+batter.runs+" runs from "+batter.balls+" balls. ":"")+(bowler?bowler.name+" bowling figures: "+(bowler.wickets||"0")+" wickets for "+(bowler.runs||"0")+" runs in "+(bowler.overs||"")+" overs.":"");
+  }else if(playersChanged){
+   line=(batter?batter.name+" is on strike with "+batter.runs+" runs from "+batter.balls+" balls. ":"")+(bowler?"Bowler "+bowler.name+" has "+(bowler.wickets||"0")+" wickets for "+(bowler.runs||"0")+" runs.":"");
+  }else if(statusChanged && s.status){
+   line="Match update. "+s.status;
+  }
+ }
+ return line.replace(/\s+/g," ").trim();
+}
+async function freePoll(){
+ if(!freeRunning||freeBusy||!mid)return;
+ freeBusy=true;
+ try{
+  const r=await fetch("/status?match_id="+encodeURIComponent(mid)+"&_="+Date.now(),{cache:"no-store"});
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok) throw new Error(data.error||("HTTP "+r.status));
+  const s=data.snapshot||{};
+  scoreEl.textContent=(s.title?s.title+" — ":"")+(s.team1||"Team 1")+" "+(s.team1_score||"")+"  |  "+(s.team2||"Team 2")+" "+(s.team2_score||"")+(s.status?"\n"+s.status:"");
+  const line=freeCommentary(s,freeLastSnapshot);
+  freeLastSnapshot=s;
+  if(line && "speechSynthesis" in window && "SpeechSynthesisUtterance" in window){
+   transcriptEl.textContent=line;
+   transcriptEl.style.display="block";
+   const utterance=new SpeechSynthesisUtterance(line);
+   utterance.lang="en-IN";
+   utterance.rate=0.95;
+   utterance.onend=()=>{freeBusy=false;if(freeRunning)freeTimer=setTimeout(freePoll,pollMs)};
+   utterance.onerror=()=>{freeBusy=false;say("Free voice playback failed. Check your browser's text-to-speech voice settings.");if(freeRunning)freeTimer=setTimeout(freePoll,pollMs)};
+   say("Free voice commentary is running using your browser/device voice. No OpenAI API calls.");
+   window.speechSynthesis.speak(utterance);
+   return;
+  }
+  if(!("speechSynthesis" in window)){say("This browser does not support built-in speech. Try Chrome or use the device's supported browser.");freeRunning=false;freeStartBtn.textContent="▶ Start Free Voice (no API)";}
+  else say("Free mode connected. Waiting for a score or player change.");
+ }catch(e){
+  say("Free voice feed error: "+(e.message||"could not read score feed")+". Retrying automatically.");
+ }
+ freeBusy=false;
+ if(freeRunning)freeTimer=setTimeout(freePoll,pollMs);
+}
+freeStartBtn.onclick=async()=>{
+ if(freeRunning){
+  freeRunning=false;
+  clearTimeout(freeTimer);
+  if("speechSynthesis" in window)window.speechSynthesis.cancel();
+  freeStartBtn.textContent="▶ Start Free Voice (no API)";
+  say("Free commentary stopped.");
+  return;
+ }
+ if(running){running=false;startBtn.textContent="▶ Start Commentary";}
+ if(!("speechSynthesis" in window)){say("This browser does not support built-in speech. Try Chrome on your phone.");return;}
+ if(!mid){mid=selectedId();if(!mid){say("Enter a numeric match ID first.");return}history.replaceState(null,"","?match_id="+encodeURIComponent(mid));}
+ const ok=await loadStatus();if(!ok)return;
+ freeLastSnapshot=null;
+ freeRunning=true;
+ freeStartBtn.textContent="■ Stop Free Voice";
+ say("Starting free device voice commentary…");
+ freePoll();
+};
 loadBtn.onclick=async()=>{mid=selectedId();if(!mid){say("Please enter a numeric match ID.");return}history.replaceState(null,"","?match_id="+encodeURIComponent(mid));await loadStatus()};
 startBtn.onclick=async()=>{
  if(running){running=false;startBtn.textContent="▶ Start Commentary";say("Commentary stopped. Tap Start Commentary to resume.");return;}
