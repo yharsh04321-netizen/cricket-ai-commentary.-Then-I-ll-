@@ -261,18 +261,29 @@ function say(s){statusEl.textContent=s}
 function selectedId(){return /^\d{3,12}$/.test(midInput.value.trim())?midInput.value.trim():""}
 async function loadStatus(){
  if(!mid){say("Enter a numeric match ID, then tap Load.");return false}
- try{
-  const r=await fetch("/status?match_id="+encodeURIComponent(mid)+"&_="+Date.now(),{cache:"no-store"});
-  const data=await r.json().catch(()=>({}));
-  if(!r.ok){say("Status check failed (HTTP "+r.status+"): "+(data.error||"Open the service URL again, then retry."));scoreEl.textContent="";return false}
-  const s=data.snapshot||{};
-  scoreEl.textContent=(s.title?s.title+" — ":"")+
-   (s.team1||"Team 1")+" "+(s.team1_score||"")+
-   "  |  "+(s.team2||"Team 2")+" "+(s.team2_score||"")+
-   (s.status?"\n"+s.status:"");
-  say("Score backend connected. Match snapshot loaded.");
-  return true;
- }catch(e){say("Could not reach the service. Refresh this page and try again.");return false}
+ let lastMessage="The score backend is taking too long to respond.";
+ for(let attempt=1;attempt<=3;attempt++){
+  try{
+   say(attempt===1?"Checking score feed…":"Score backend is slow; retrying automatically ("+attempt+"/3)…");
+   const r=await fetch("/status?match_id="+encodeURIComponent(mid)+"&_="+Date.now(),{cache:"no-store"});
+   const data=await r.json().catch(()=>({}));
+   if(r.ok){
+    const s=data.snapshot||{};
+    scoreEl.textContent=(s.title?s.title+" — ":"")+
+     (s.team1||"Team 1")+" "+(s.team1_score||"")+
+     "  |  "+(s.team2||"Team 2")+" "+(s.team2_score||"")+
+     (s.status?"\n"+s.status:"");
+    say("Score backend connected. Match snapshot loaded.");
+    return true;
+   }
+   lastMessage="HTTP "+r.status+": "+(data.error||"Score backend did not return a snapshot.");
+   if(r.status!==502 && r.status!==503){break}
+  }catch(e){lastMessage="The commentary service could not complete the score request."}
+  if(attempt<3)await new Promise(resolve=>setTimeout(resolve,2000));
+ }
+ scoreEl.textContent="";
+ say("Score feed unavailable after retries. "+lastMessage+" Try Load again in 20–30 seconds; the existing score backend may be waking up or responding slowly.");
+ return false;
 }
 async function poll(){
  if(!running||busy||!mid)return;
