@@ -41,17 +41,29 @@ def safe(value, limit=120):
 
 
 def fetch_snapshot(mid):
-    response = requests.get(
-        BACKEND_URL,
-        params={"match_id": mid, "_": str(time.time_ns())},
-        headers={
-            "Cache-Control": "no-cache, no-store",
-            "Pragma": "no-cache",
-            "User-Agent": "isolated-ai-cricket-commentary/1.0",
-        },
-        timeout=15,
-    )
-    response.raise_for_status()
+    # Retry transient Render gateway failures in this isolated commentary service.
+    response = None
+    last_error = None
+    for attempt in range(3):
+        try:
+            response = requests.get(
+                BACKEND_URL,
+                params={"match_id": mid, "_": str(time.time_ns())},
+                headers={
+                    "Cache-Control": "no-cache, no-store",
+                    "Pragma": "no-cache",
+                    "User-Agent": "isolated-ai-cricket-commentary/1.0",
+                },
+                timeout=20,
+            )
+            response.raise_for_status()
+            break
+        except (requests.RequestException, ValueError) as exc:
+            last_error = exc
+            if attempt < 2:
+                time.sleep(1.5 * (attempt + 1))
+    else:
+        raise RuntimeError("Score backend failed after 3 attempts: " + str(last_error)[:220])
     payload = response.json()
     match = payload.get("match") if isinstance(payload, dict) else None
     if not isinstance(match, dict):
