@@ -1,3 +1,4 @@
+import base64
 import hashlib
 import json
 import os
@@ -165,12 +166,17 @@ def openai_post(path, payload, timeout=45):
 
 def generate_text(current, previous):
     instructions = (
-        "You are a professional cricket analyst speaking naturally in Hinglish for a live broadcast. "
-        "Return one concise spoken update, normally 1-2 sentences and under 45 words. Calm, sharp, analytical, "
-        "broadcast-ready; no emojis, headings, markdown, or generic filler. Use only the supplied verified "
-        "snapshot and change context. Never invent a delivery, player stat, score, target, required rate, result, "
-        "or tactic. If data is stale/incomplete or there is no meaningful update, output exactly SKIP. Do not "
-        "claim a ball just happened unless the delivery feed changed. Do not mention AI."
+        "You are the lead commentator on a professional Indian television cricket broadcast. Speak fluent, "
+        "natural Hinglish with energy and rhythm, like a real live match broadcast, but never shout every line. "
+        "Return 2-3 short spoken sentences, normally 25-55 words. Mention the exact current score and overs when "
+        "available, then add a relevant cricketing observation grounded in the supplied data: partnership, "
+        "batter contribution, run rate, bowler figures, or match situation. Vary phrasing naturally and avoid "
+        "repeating the same template. Sound confident, warm and broadcast-ready; no emojis, headings, markdown, "
+        "or generic filler. Use only verified snapshot values. Never invent a shot, boundary, wicket delivery, "
+        "field placement, target, required rate, result, or tactic. If score/player/over data changed, ALWAYS give "
+        "a useful update and do not output SKIP. Output exactly SKIP only when the change is purely cosmetic or "
+        "there is genuinely no meaningful cricket information. Do not claim a ball just happened unless the "
+        "delivery feed changed. Do not mention AI."
     )
     data = {
         "current_verified_snapshot": current,
@@ -248,13 +254,14 @@ button{border:0;border-radius:9px;padding:12px 15px;background:#22c55e;color:#07
 <button id="start">▶ Start Commentary</button>
 <div id="status" role="status">Ready. Enter a match ID and tap Load.</div>
 <div id="score"></div>
+<div id="transcript" style="display:none;margin-top:14px;padding:13px;border-left:3px solid #22c55e;border-radius:6px;background:#0a1322;line-height:1.6;color:#f8fafc" aria-live="polite"></div>
 <div class="muted">This service only reads the existing score backend. It does not change your scorecard or match selector.</div>
 <audio id="audio" preload="none"></audio>
 </main>
 <script>
 const pollMs=__POLL_MS__, params=new URLSearchParams(location.search);
 const midInput=document.getElementById("mid"), statusEl=document.getElementById("status"), scoreEl=document.getElementById("score");
-const startBtn=document.getElementById("start"), loadBtn=document.getElementById("load"), audio=document.getElementById("audio");
+const startBtn=document.getElementById("start"), loadBtn=document.getElementById("load"), audio=document.getElementById("audio"), transcriptEl=document.getElementById("transcript");
 let mid=params.get("match_id")||"", running=false, busy=false, timer=null;
 midInput.value=mid;
 function say(s){statusEl.textContent=s}
@@ -291,6 +298,8 @@ async function poll(){
  try{
   const r=await fetch("/next.mp3?match_id="+encodeURIComponent(mid)+"&_="+Date.now(),{cache:"no-store"});
   if(r.status===200){
+   const encoded=r.headers.get("X-Commentary-Text-B64");
+   if(encoded){try{const bytes=Uint8Array.from(atob(encoded),ch=>ch.charCodeAt(0));transcriptEl.textContent=new TextDecoder().decode(bytes);transcriptEl.style.display="block";}catch(e){}}
    const blob=await r.blob(), url=URL.createObjectURL(blob);
    audio.src=url;
    try{await audio.play();say("🎙️ Playing AI commentary.");}
@@ -309,10 +318,10 @@ async function poll(){
 }
 loadBtn.onclick=async()=>{mid=selectedId();if(!mid){say("Please enter a numeric match ID.");return}history.replaceState(null,"","?match_id="+encodeURIComponent(mid));await loadStatus()};
 startBtn.onclick=async()=>{
+ if(running){running=false;startBtn.textContent="▶ Start Commentary";say("Commentary stopped. Tap Start Commentary to resume.");return;}
  if(!mid){mid=selectedId();if(!mid){say("Enter a numeric match ID first.");return}history.replaceState(null,"","?match_id="+encodeURIComponent(mid))}
  const ok=await loadStatus();if(!ok)return;
  running=true;startBtn.textContent="■ Stop Commentary";say("Starting voice commentary…");poll();
- startBtn.onclick=()=>{running=false;startBtn.textContent="▶ Start Commentary";say("Commentary stopped. Tap Start Commentary to resume.")};
 };
 if(mid){loadStatus()}else{say("Enter a match ID above. The page now shows status instead of staying blank.")}
 </script></body></html>"""
@@ -405,7 +414,8 @@ def next_mp3():
             headers={
                 "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
                 "Pragma": "no-cache",
-                "X-Commentary-Mode": "voice-only",
+                "X-Commentary-Mode": "voice-and-transcript",
+                "X-Commentary-Text-B64": base64.b64encode(spoken_text.encode("utf-8")).decode("ascii"),
             },
         )
 
