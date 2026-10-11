@@ -309,8 +309,8 @@ async function poll(){
    return;
   }
   if(r.status===401){say("Authentication is not set. Open the main service URL again; if this persists, check COMMENTARY_TOKEN in Render.");running=false}
-  else if(r.status===503){say("OpenAI API key is not configured. Check OPENAI_API_KEY in the commentary service's Render environment.");running=false}
-  else if(r.status!==204){say("Commentary request returned HTTP "+r.status+". Check the commentary service logs.");}
+  else if(r.status===503){const d=await r.json().catch(()=>({}));say(d.error||"OpenAI API key is not configured. Check OPENAI_API_KEY in the commentary service Render environment.");running=false}
+  else if(r.status>=400){const d=await r.json().catch(()=>({}));say("Commentary error (HTTP "+r.status+"): "+(d.error||"Check Render logs."));}
   else {say("Connected — waiting for a new score or player update to commentate.");}
  }catch(e){say("Connection hiccup. Retrying automatically…")}
  busy=false;
@@ -368,7 +368,7 @@ def next_mp3():
             current = fetch_snapshot(mid)
         except Exception as exc:
             app.logger.warning("Score snapshot fetch failed: %s", str(exc)[:180])
-            return Response(status=204, headers={"Cache-Control": "no-store"})
+            return jsonify({"error": "Score snapshot fetch failed: " + str(exc)[:220]}), 502
 
         fp = fingerprint(current)
         old_state = state.get(mid)
@@ -404,8 +404,8 @@ def next_mp3():
                 return Response(status=204, headers={"Cache-Control": "no-store"})
             audio_bytes = synthesize(spoken_text)
         except Exception as exc:
-            app.logger.warning("Commentary generation failed: %s", str(exc)[:180])
-            return Response(status=204, headers={"Cache-Control": "no-store"})
+            app.logger.exception("Commentary generation failed")
+            return jsonify({"error": "AI text/audio generation failed: " + str(exc)[:260]}), 502
 
         state[mid] = {"fingerprint": fp, "snapshot": current, "last_spoken_at": time.time()}
         return Response(
